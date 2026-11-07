@@ -34,6 +34,7 @@
 #include "override/topst-d3-g-vpu.dtsi"
 #include "override/topst-d3-g-camera.dtsi"
 #include "override/topst-d3-g-pwm.dtsi"
+#include "override/topst-d3-g-header-i2s.dtsi"
 
 &vout_drv0 {
 	status = "disabled";
