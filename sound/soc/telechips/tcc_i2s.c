@@ -633,6 +633,18 @@ static int tcc_i2s_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 	return ret;
 }
 
+/* the rates the I2S DAI accepts (8 kHz to 192 kHz with KNOT) */
+static const unsigned int tcc_i2s_std_rates[] = {
+	8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 64000,
+	88200, 96000, 176400, 192000
+};
+
+static const struct snd_pcm_hw_constraint_list tcc_i2s_std_rate_cons = {
+	.count = ARRAY_SIZE(tcc_i2s_std_rates),
+	.list = tcc_i2s_std_rates,
+	.mask = 0,
+};
+
 static int tcc_i2s_startup(
 	struct snd_pcm_substream *substream,
 	struct snd_soc_dai *dai)
@@ -640,15 +652,13 @@ static int tcc_i2s_startup(
 #ifdef i2s_dai_func_dbg_enable
 	struct tcc_i2s_t *i2s =
 		 (struct tcc_i2s_t *)snd_soc_dai_get_drvdata(dai);
-#else
-	unused(dai);
 #endif
-	unused(substream);
 
 	i2s_dai_func_dbg("[%d] +- %s - active : %d -+\n",
 		i2s->blk_no, __func__, snd_soc_dai_active(dai));
 
-	return 0;
+	return snd_pcm_hw_constraint_list(substream->runtime, 0,
+			SNDRV_PCM_HW_PARAM_RATE, &tcc_i2s_std_rate_cons);
 }
 
 static void tcc_i2s_shutdown(

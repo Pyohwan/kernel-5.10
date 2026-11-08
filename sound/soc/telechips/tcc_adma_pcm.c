@@ -288,17 +288,6 @@ static const struct tcc_adma_pcm_hw_t tcc_adma_hw[TCC_ADMA_MAX] = {
 	},
 };
 
-static const unsigned int tcc_rates[] = {
-	8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 64000,
-	88200, 96000, 176400, 192000
-};
-
-static struct snd_pcm_hw_constraint_list tcc_constraints_rates = {
-	.count = ARRAY_SIZE(tcc_rates),
-	.list = tcc_rates,
-	.mask = 0,
-};
-
 static int tcc_adma_pcm_open(
 	struct snd_soc_component *component,
 	struct snd_pcm_substream *substream)
@@ -319,12 +308,6 @@ static int tcc_adma_pcm_open(
 							adma_pcm->blk_no, __func__);
 		ret = -EFAULT;
 	} else {
-		(void) snd_pcm_hw_constraint_list(
-				substream->runtime,
-				0,
-				SNDRV_PCM_HW_PARAM_RATE,
-				&tcc_constraints_rates);
-
 		if (adma_pcm->adrcnt_mode != 0u) {
 			(void) snd_pcm_hw_constraint_step(
 					substream->runtime,
