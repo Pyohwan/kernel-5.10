@@ -2043,12 +2043,51 @@ static s32 tcc_pcie_add_pcie_port(struct tcc_pcie *tp, struct platform_device *p
 	return err;
 }
 
+/*
+ * A warm reboot doesn't reset the controller or PERST#, so the previous
+ * kernel's link can still be up here (LTSSM left enabled). Probe would
+ * take that link as is while the endpoint gets reset through PERST#, and
+ * nothing answers on bus 1 afterwards. Bring the link down the proper
+ * way first: assert PERST#, wait, then turn LTSSM off.
+ *
+ * This reads the link registers before phy_power_on(). That is fine on
+ * TCC805x (the block is readable right after a cold boot too), but check
+ * it before using this on a SoC where the wrapper needs the PHY clock.
+ */
+static void tcc_pcie_stop_stale_link(const struct tcc_pcie *tp)
+{
+	struct dw_pcie *pci = tp->pci;
+	u32 val;
+	int i;
+
+	val = tcc_pcie_readl(tp->link_base, PCIE_LTSSM_CTRL);
+	if ((val & PCIE_LINK_CFG_LTSSM_ENABLE_MASK) == 0U)
+		return;
+
+	dev_info(pci->dev, "link left up by the previous kernel, resetting it\n");
+
+	/* idle state drives PERST# low */
+	(void)pinctrl_pm_select_idle_state(pci->dev);
+	msleep(100);
+	(void)tcc_pcie_enable_ltssm(tp, false);
+
+	for (i = 0; i < 100; i++) {
+		if (tcc_pcie_link_up(pci) != (s32)PCIE_LINK_UP)
+			return;
+		usleep_range(1000, 2000);
+	}
+	dev_warn(pci->dev, "old link still up\n");
+}
+
 static int tcc_pcie_add_port(struct tcc_pcie *tp,
 		struct platform_device *pdev)
 {
 	s32 err = 0;
 
 	if ((tp != NULL) && (pdev != NULL)) {
+		if (tp->mode == DW_PCIE_RC_TYPE)
+			tcc_pcie_stop_stale_link((const struct tcc_pcie *)tp);
+
 		err = tcc_pcie_wake_up_phy((const struct tcc_pcie *)tp);
 		if (err == 0) {
 			switch (tp->mode) {
