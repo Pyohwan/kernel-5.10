@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+/*
+ * TOPST D3-G: I2S out on the 40-pin header, for a codec-less amp
+ * like MAX98357A.
+ *
+ *   pin 29 BCLK (gpg-1), pin 31 LRCK (gpg-2), pin 33 DATA OUT (gpg-3)
+ *
+ * These pins are Stereo DAI Port 1, routed to i2s4 + adma4 through
+ * the audio chmux. Pin 33 is pwm_b by default, so pwm_b is turned off.
+ */
+
+&pinctrl {
+	d3g_i2s_bclk: d3g_i2s_bclk {
+		telechips,pins = "gpg-1";
+		telechips,pin-function = <2>;
+		telechips,input_buffer_enable;
+	};
+	d3g_i2s_bclk_idle: d3g_i2s_bclk_idle {
+		telechips,pins = "gpg-1";
+		telechips,pin-function = <0>;
+		telechips,output-low = <0>;
+	};
+	d3g_i2s_lrck: d3g_i2s_lrck {
+		telechips,pins = "gpg-2";
+		telechips,pin-function = <2>;
+		telechips,input_buffer_enable;
+	};
+	d3g_i2s_lrck_idle: d3g_i2s_lrck_idle {
+		telechips,pins = "gpg-2";
+		telechips,pin-function = <0>;
+		telechips,output-low = <0>;
+	};
+	d3g_i2s_dao: d3g_i2s_dao {
+		telechips,pins = "gpg-3";
+		telechips,pin-function = <2>;
+	};
+	d3g_i2s_dao_idle: d3g_i2s_dao_idle {
+		telechips,pins = "gpg-3";
+		telechips,pin-function = <0>;
+		telechips,output-low = <0>;
+	};
+};
+
+/* pin 33 (gpg-3) is used for I2S data */
+&pwm1 {
+	status = "disabled";
+};
+
+&adma4 {
+	status = "okay";
+};
+
+&i2s4 {
+	pinctrl-names = "default", "idle";
+	pinctrl-0 = <&d3g_i2s_bclk &d3g_i2s_lrck &d3g_i2s_dao>;
+	pinctrl-1 = <&d3g_i2s_bclk_idle &d3g_i2s_lrck_idle &d3g_i2s_dao_idle>;
+	/* the board can't make 48 kHz exactly, allow only 46875 Hz */
+	telechips,exact-rates;
+	status = "okay";
+};
+
+/* index = i2s block, value = port, 99 = none: i2s4 to stereo port 1 */
+&audio_chmux {
+	dai = <99 99 99 99 1 99 99>;
+	status = "okay";
+};
+
+&sound1 {
+	compatible = "telechips,snd-card";
+	card-name = "D3-G I2S Speaker";
+	status = "okay";
+
+	telechips,dai-link@0 {
+		stream-name = "I2S_4";
+		codec,format = "i2s";
+		codec,continuous-clock;
+		mclk_div = <16>;
+		bclk_ratio = <64>;
+		pcm = <&adma4>;
+		dai = <&i2s4>;
+		playback-only;
+	};
+};

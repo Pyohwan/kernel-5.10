@@ -18,6 +18,8 @@
 #include <linux/wait.h>
 #include <linux/sched.h>
 #include <linux/clk.h>
+#include <linux/math64.h>
+#include <linux/mutex.h>
 #include <linux/poll.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -80,6 +82,12 @@ enum tcc_i2s_audio_filter_type {
 #endif//defined(CONFIG_ARCH_TCC805X) || defined(CONFIG_ARCH_TCC806X)
 };
 
+/* the rates the I2S DAI accepts (8 kHz to 192 kHz with KNOT) */
+static const unsigned int tcc_i2s_std_rates[] = {
+	8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 64000,
+	88200, 96000, 176400, 192000
+};
+
 struct tcc_i2s_t {
 	struct platform_device *pdev;
 
@@ -117,6 +125,13 @@ struct tcc_i2s_t {
 	bool is_updated;
 	uint8_t tdm_slots;
 	uint8_t tdm_slot_width;
+
+	/* "telechips,exact-rates": allow only rates the clock makes exactly */
+	bool exact_rates;
+	bool exact_rates_built;
+	struct mutex exact_lock;
+	unsigned int exact_rate_list[ARRAY_SIZE(tcc_i2s_std_rates)];
+	struct snd_pcm_hw_constraint_list exact_rate_cons;
 
 	//status
 	unsigned long clock_rate;
@@ -633,22 +648,96 @@ static int tcc_i2s_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 	return ret;
 }
 
+static const struct snd_pcm_hw_constraint_list tcc_i2s_std_rate_cons = {
+	.count = ARRAY_SIZE(tcc_i2s_std_rates),
+	.list = tcc_i2s_std_rates,
+	.mask = 0,
+};
+
+/*
+ * On some boards the MCLK parent can't make the standard audio rates
+ * exactly. On TOPST D3-G, 48 kHz asks for 49.152 MHz and gets 48 MHz, so
+ * it really plays at 46875 Hz. Ask the clock what it makes for each
+ * standard rate and keep only the rates that come out exact (here just
+ * 46875 Hz), so userspace resamples to a rate the hardware really plays.
+ * Called with exact_lock held.
+ */
+static void tcc_i2s_build_exact_rates(struct tcc_i2s_t *i2s)
+{
+	unsigned int i, j, n = 0;
+
+	for (i = 0; i < ARRAY_SIZE(tcc_i2s_std_rates); i++) {
+		unsigned int rate = tcc_i2s_std_rates[i];
+		unsigned long want = calc_mclk(i2s, rate);
+		unsigned int real;
+		long got;
+		u64 rem;
+		u64 num;
+
+		if (want == 0UL)
+			continue;
+
+		got = clk_round_rate(i2s->dai_pclk, want);
+		if (got <= 0)
+			continue;
+
+		/* real rate = got / (want / rate), keep it only if exact */
+		num = div64_u64_rem((u64)got * rate, want, &rem);
+		if ((rem != 0ULL) || (num < 8000ULL) || (num > 192000ULL))
+			continue;
+		real = (unsigned int)num;
+
+		if (calc_mclk(i2s, real) > (unsigned long)TCC_DAI_MAX_FREQ)
+			continue;
+
+		for (j = 0; j < n; j++) {
+			if (i2s->exact_rate_list[j] == real)
+				break;
+		}
+		if (j == n)
+			i2s->exact_rate_list[n++] = real;
+	}
+
+	i2s->exact_rate_cons.count = n;
+	i2s->exact_rate_cons.list = i2s->exact_rate_list;
+	i2s->exact_rate_cons.mask = 0;
+	i2s->exact_rates_built = TRUE;
+
+	for (j = 0; j < n; j++)
+		dev_info(&i2s->pdev->dev, "[%d] exact rate: %u Hz\n",
+			 i2s->blk_no, i2s->exact_rate_list[j]);
+	if (n == 0U)
+		dev_info(&i2s->pdev->dev,
+			 "[%d] no exact rate, using the standard rates\n",
+			 i2s->blk_no);
+}
+
 static int tcc_i2s_startup(
 	struct snd_pcm_substream *substream,
 	struct snd_soc_dai *dai)
 {
-#ifdef i2s_dai_func_dbg_enable
 	struct tcc_i2s_t *i2s =
 		 (struct tcc_i2s_t *)snd_soc_dai_get_drvdata(dai);
-#else
-	unused(dai);
-#endif
-	unused(substream);
+	const struct snd_pcm_hw_constraint_list *cons = &tcc_i2s_std_rate_cons;
 
 	i2s_dai_func_dbg("[%d] +- %s - active : %d -+\n",
 		i2s->blk_no, __func__, snd_soc_dai_active(dai));
 
-	return 0;
+	/* exact rates only when we make BCLK and LRCK ourselves */
+	if (i2s->exact_rates &&
+	    ((i2s->dai_fmt & (uint32_t)SND_SOC_DAIFMT_MASTER_MASK) ==
+	     (uint32_t)SND_SOC_DAIFMT_CBS_CFS)) {
+		mutex_lock(&i2s->exact_lock);
+		if (!i2s->exact_rates_built)
+			tcc_i2s_build_exact_rates(i2s);
+		mutex_unlock(&i2s->exact_lock);
+
+		if (i2s->exact_rate_cons.count > 0U)
+			cons = &i2s->exact_rate_cons;
+	}
+
+	return snd_pcm_hw_constraint_list(substream->runtime, 0,
+			SNDRV_PCM_HW_PARAM_RATE, cons);
 }
 
 static void tcc_i2s_shutdown(
@@ -2232,6 +2321,9 @@ static int parse_i2s_dt(struct platform_device *pdev, struct tcc_i2s_t *i2s)
 				"block-type",
 				&i2s->block_type);
 
+		i2s->exact_rates = of_property_read_bool(pdev->dev.of_node,
+				"telechips,exact-rates");
+
 		i2s_dai_dbg("[%d] block-type : %u\n", i2s->blk_no,
 				i2s->block_type);
 
@@ -2318,6 +2410,7 @@ static int tcc_i2s_probe(struct platform_device *pdev)
 	} else {
 		i2s_dai_dbg(" %s - i2s is not null\n", __func__);
 
+		mutex_init(&i2s->exact_lock);
 		set_default_configrations(i2s);
 
 		ret = parse_i2s_dt(pdev, i2s);
