@@ -2049,6 +2049,10 @@ static s32 tcc_pcie_add_pcie_port(struct tcc_pcie *tp, struct platform_device *p
  * take that link as is while the endpoint gets reset through PERST#, and
  * nothing answers on bus 1 afterwards. Bring the link down the proper
  * way first: assert PERST#, wait, then turn LTSSM off.
+ *
+ * This reads the link registers before phy_power_on(). That is fine on
+ * TCC805x (the block is readable right after a cold boot too), but check
+ * it before using this on a SoC where the wrapper needs the PHY clock.
  */
 static void tcc_pcie_stop_stale_link(const struct tcc_pcie *tp)
 {
@@ -2060,7 +2064,7 @@ static void tcc_pcie_stop_stale_link(const struct tcc_pcie *tp)
 	if ((val & PCIE_LINK_CFG_LTSSM_ENABLE_MASK) == 0U)
 		return;
 
-	dev_info(pci->dev, "link left on by the bootloader, resetting it\n");
+	dev_info(pci->dev, "link left up by the previous kernel, resetting it\n");
 
 	/* idle state drives PERST# low */
 	(void)pinctrl_pm_select_idle_state(pci->dev);
